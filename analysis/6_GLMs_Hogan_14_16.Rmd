@@ -1,0 +1,695 @@
+---
+title: "Hogan Generalized Linear Models"
+author: "Kyle Shedd & Emily Lescak"
+output:
+  html_notebook:
+    theme: united
+    toc: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Introduction
+
+The purpose of these analyses are to follow up on the previous notebook and fully consider all of the Hogan Bay data holistically by model fitting reproductive success (RS) to generalized linear models (GLM’s), as is commonly done in the literature (see [Anderson et al. 2011](https://onlinelibrary.wiley.com/doi/full/10.1111/j.1752-4571.2012.00271.x), [Bernston et al. 2011](https://afspubs.onlinelibrary.wiley.com/doi/pdf/10.1080/00028487.2011.584489), [Ford et al. 2012](https://onlinelibrary.wiley.com/doi/full/10.1111/j.1755-263X.2012.00261.x), and [Janowitz-Koch et al. 2018](https://onlinelibrary.wiley.com/doi/full/10.1111/eva.12725)). First, we will explore the data a bit so we know what we are modeling, next we will check for multi-collinearity among variables, and finally we will construct a series of GLM's to model RS and use Akaike model selection to calculate variable weights.
+```{r setup, include=FALSE}
+library(coin)
+library(MASS)
+library(scales)
+library(tidyverse)
+library(leaflet)
+library(lubridate)
+library(ggExtra)
+library(gridExtra)
+library(MuMIn)
+library(GGally)
+library(gganimate)
+library(QuantPsyc)
+library(hier.part)
+source("hier.part_functions.R")
+
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.width = 10)
+```
+
+# Load Parent Data
+
+Load complete even-lineage Hogan RS data with sample location derived from `riverdist`.
+```{r}
+(riverdist_parentage_hogan <- read_csv("../data/hogan_14_16/riverdist_parentage_hogan.csv") %>% 
+   mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery")))
+)
+```
+
+# Check for multi-collinearity {#multi-collinearity}
+
+Before modeling RS, we need to check for multi-collinearity among variables because there may be some degree of non-independence among variables. For visualization purposes, data are grouped by origin. The diagonal shows density plots for continuous variables (e.g. Sample Date) and side by side bar plots for categorical variables (e.g. Sex). The upper plots above the diagonal show correlation coefficients between continuous variables, grouped box plots between continuous and categorical variables, and stacked bar plots between categorical variables. The lower plots below the diagonal show scatter plots with loess curves between continuous variables, grouped histograms between continuous and categorical variables, and stacked bar plots between categorical variables. The variable *Success* is derived from *RS* (Successful for RS >= 1, Unsuccessful for RS = 0), and thus would not be used in a model concurrent with *RS*. **Note** that these plots exclude individuals with missing data.
+```{r try ggpairs, fig.width=12, fig.height=12, warning=FALSE, message=FALSE}
+reduced <- riverdist_parentage_hogan %>% 
+  rename(RS = n) %>% 
+  mutate(Origin = case_when(origin == "Natural" ~ "N", 
+                            origin == "Hatchery" ~ "H")) %>% 
+  mutate(Origin = factor(Origin, levels = c("N", "H"))) %>% 
+  select(`Sample Date`, Sex, `Length Mm`, Origin, RS, Success, Intertidal, Distance) %>% 
+  drop_na()
+
+ggpairs(reduced, 
+        mapping = aes(color = Origin, alpha = 0.5), 
+        columns = c("Sample Date", "Length Mm", "Distance","RS", "Success", "Intertidal", "Sex"), 
+        columnLabels = c("Sample Date", "Length (mm)", "Distance (m)", "RS", "Success", "Intertidal", "Sex"), 
+        progress = FALSE, 
+        lower = list(continuous = "smooth_loess", combo = wrap(ggally_facethist, position = "dodge2")),
+        upper = list(continuous = wrap("cor", size = 4, hjust = 0.8), combo = "box"),
+        diag = list(discrete = wrap(ggally_barDiag, position = "dodge2"))
+        ) + 
+  theme_bw() +
+  theme(axis.text.x  = element_text(angle = 45, hjust = 1), 
+        text = element_text(size = 16))
+```
+
+Overall, correlations among potential explanatory variables (sample date, length, and stream distance) are pretty weak, so there are not big concerns with multi-collinearity (i.e. we can have all variables in a model). Weak positive correlations were found between length and date (r = 0.29) and distance and length (0.12). Reproductive success was negatively correlated with stream distance (-0.10), and slightly positively correlated with length (0.07) and date (0.03).
+
+# Use GLM's to associate RS with sample location, date, origin, and length by sex {#glm}
+
+Given that the distribution of RS is best approximated by a negative binomial distribution, we'll use a negative binomial distribution GLM with a log-linked function to evaluation associations between RS and origin, length, sample date, location (distance from the mouth of the stream), and sex.
+
+## Create models
+
+Here we create models following the methods of [Berntson et al. 2011](https://afspubs.onlinelibrary.wiley.com/doi/pdf/10.1080/00028487.2011.584489). *A priori* we have set up 131 models that range in complexity from considering a single variable, to more complex models incorporating all variables, as well as quadratic terms for ordinal sample date (Julian) and length (based on relationships we saw [above](#multi-collinearity)). We avoid overly-complex models by only including first order interactions with origin and sex. For this suite of models we will identify statistically significant variables and select the best model based on Akaike's Information Criteria (AIC), which takes into account both residual deviance and model complexity.
+```{r}
+riverdist_parentage_hogan <- riverdist_parentage_hogan %>% 
+  mutate(Julian = yday(`Sample Date`))
+
+# Length^2 + Julian^2
+# Distance
+## with and without sex/origin interactions
+RS.glm.1 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` * SEX + Distance + I(Julian^2) + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.2 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` * SEX + Distance + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.3 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Distance + I(Julian^2) + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.4 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Distance + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 4 vars
+RS.glm.5 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Distance + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.6 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Distance + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.7 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.8 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Distance + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.9 <- glm.nb(n ~ SEX + Distance + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 3 vars
+RS.glm.10 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Distance, data = riverdist_parentage_hogan, link = log)
+RS.glm.11 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.12 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Distance + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.13 <- glm.nb(n ~  SEX + Distance + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.14 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.15 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Distance + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.16 <- glm.nb(n ~ SEX + Distance + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.17 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.18 <- glm.nb(n ~ SEX + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.19 <- glm.nb(n ~ Distance + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 2 vars
+RS.glm.20 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX, data = riverdist_parentage_hogan, link = log)
+RS.glm.21 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Distance, data = riverdist_parentage_hogan, link = log)
+RS.glm.22 <- glm.nb(n ~ SEX + Distance, data = riverdist_parentage_hogan, link = log)
+RS.glm.23 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.24 <- glm.nb(n ~ SEX + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.25 <- glm.nb(n ~ Distance + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.26 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.27 <- glm.nb(n ~ SEX + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.28 <- glm.nb(n ~ Distance + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.29 <- glm.nb(n ~ I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 1 var
+RS.glm.30 <- glm.nb(n ~ origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.31 <- glm.nb(n ~ I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.32 <- glm.nb(n ~ Distance, data = riverdist_parentage_hogan, link = log)
+RS.glm.33 <- glm.nb(n ~ SEX, data = riverdist_parentage_hogan, link = log)
+RS.glm.34 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm`, data = riverdist_parentage_hogan, link = log)
+
+# Intertidal
+## with and without sex/origin interactions
+RS.glm.35 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` * SEX + Intertidal + I(Julian^2) + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.36 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` * SEX + Intertidal + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.37 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Intertidal + I(Julian^2) + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.38 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Intertidal + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 4 vars
+RS.glm.39 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Intertidal + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.40 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Intertidal + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.41 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Intertidal + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.42 <- glm.nb(n ~ SEX + Intertidal + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 3 vars
+RS.glm.43 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Intertidal, data = riverdist_parentage_hogan, link = log)
+RS.glm.44 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Intertidal + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.45 <- glm.nb(n ~  SEX + Intertidal + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.46 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Intertidal + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.47 <- glm.nb(n ~ SEX + Intertidal + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.48 <- glm.nb(n ~ Intertidal + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 2 vars
+RS.glm.49 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Intertidal, data = riverdist_parentage_hogan, link = log)
+RS.glm.50 <- glm.nb(n ~ SEX + Intertidal, data = riverdist_parentage_hogan, link = log)
+RS.glm.51 <- glm.nb(n ~ Intertidal + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.52 <- glm.nb(n ~ Intertidal + origin, data = riverdist_parentage_hogan, link = log)
+
+## 1 var
+RS.glm.53 <- glm.nb(n ~ Intertidal, data = riverdist_parentage_hogan, link = log)
+
+
+
+# Length + Julian^2
+# Distance
+## with and without sex/origin interactions
+RS.glm.54 <- glm.nb(n ~ `Length Mm` * SEX + Distance + I(Julian^2) + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.55 <- glm.nb(n ~ `Length Mm` * SEX + Distance + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.56 <- glm.nb(n ~ `Length Mm` + SEX + Distance + I(Julian^2) + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.57 <- glm.nb(n ~ `Length Mm` + SEX + Distance + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 4 vars
+RS.glm.58 <- glm.nb(n ~ `Length Mm` + SEX + Distance + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.59 <- glm.nb(n ~ `Length Mm` + SEX + Distance + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.60 <- glm.nb(n ~ `Length Mm` + SEX + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.61 <- glm.nb(n ~ `Length Mm` + Distance + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 3 vars
+RS.glm.62 <- glm.nb(n ~ `Length Mm` + SEX + Distance, data = riverdist_parentage_hogan, link = log)
+RS.glm.63 <- glm.nb(n ~ `Length Mm` + SEX + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.64 <- glm.nb(n ~ `Length Mm` + Distance + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.65 <- glm.nb(n ~ `Length Mm` + SEX + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.66 <- glm.nb(n ~ `Length Mm` + Distance + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.67 <- glm.nb(n ~ `Length Mm` + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 2 vars
+RS.glm.68 <- glm.nb(n ~ `Length Mm` + SEX, data = riverdist_parentage_hogan, link = log)
+RS.glm.69 <- glm.nb(n ~ `Length Mm` + Distance, data = riverdist_parentage_hogan, link = log)
+RS.glm.70 <- glm.nb(n ~ `Length Mm` + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.71 <- glm.nb(n ~ `Length Mm` + origin, data = riverdist_parentage_hogan, link = log)
+
+## 1 var
+RS.glm.72 <- glm.nb(n ~ `Length Mm`, data = riverdist_parentage_hogan, link = log)
+
+# Intertidal
+## with and without sex/origin interactions
+RS.glm.73 <- glm.nb(n ~ `Length Mm` * SEX + Intertidal + I(Julian^2) + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.74 <- glm.nb(n ~ `Length Mm` * SEX + Intertidal + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.75 <- glm.nb(n ~ `Length Mm` + SEX + Intertidal + I(Julian^2) + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.76 <- glm.nb(n ~ `Length Mm` + SEX + Intertidal + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 4 vars
+RS.glm.77 <- glm.nb(n ~ `Length Mm` + SEX + Intertidal + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.78 <- glm.nb(n ~ `Length Mm` + SEX + Intertidal + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.79 <- glm.nb(n ~ `Length Mm` + Intertidal + I(Julian^2) + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 3 vars
+RS.glm.80 <- glm.nb(n ~ `Length Mm` + SEX + Intertidal, data = riverdist_parentage_hogan, link = log)
+RS.glm.81 <- glm.nb(n ~ `Length Mm` + Intertidal + I(Julian^2) + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.82 <- glm.nb(n ~ `Length Mm` + Intertidal + origin, data = riverdist_parentage_hogan, link = log)
+
+## 2 vars
+RS.glm.83 <- glm.nb(n ~ `Length Mm` + Intertidal, data = riverdist_parentage_hogan, link = log)
+
+## 1 var
+
+
+
+# Length^2 + Julian
+# Distance
+## with and without sex/origin interactions
+RS.glm.84 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` * SEX + Distance + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.85 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` * SEX + Distance + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.86 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Distance + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.87 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Distance + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 4 vars
+RS.glm.88 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Distance + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.89 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.90 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Distance + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.91 <- glm.nb(n ~ SEX + Distance + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 3 vars
+RS.glm.92 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.93 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Distance + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.94 <- glm.nb(n ~  SEX + Distance + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.95 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.96 <- glm.nb(n ~ SEX + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.97 <- glm.nb(n ~ Distance + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 2 vars
+RS.glm.98 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.99 <- glm.nb(n ~ SEX + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.100 <- glm.nb(n ~ Distance + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.101 <- glm.nb(n ~ Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 1 var
+RS.glm.102 <- glm.nb(n ~ Julian, data = riverdist_parentage_hogan, link = log)
+
+# Intertidal
+## with and without sex/origin interactions
+RS.glm.103 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` * SEX + Intertidal + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.104 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` * SEX + Intertidal + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.105 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Intertidal + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.106 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Intertidal + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 4 vars
+RS.glm.107 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + SEX + Intertidal + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.108 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Intertidal + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.109 <- glm.nb(n ~ SEX + Intertidal + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 3 vars
+RS.glm.110 <- glm.nb(n ~ I(`Length Mm`^2) + `Length Mm` + Intertidal + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.111 <- glm.nb(n ~  SEX + Intertidal + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.112 <- glm.nb(n ~ Intertidal + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 2 vars
+RS.glm.113 <- glm.nb(n ~ Intertidal + Julian, data = riverdist_parentage_hogan, link = log)
+
+## 1 var
+
+
+
+# Length + Julian
+# Distance
+## with and without sex/origin interactions
+RS.glm.114 <- glm.nb(n ~ `Length Mm` * SEX + Distance + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.115 <- glm.nb(n ~ `Length Mm` * SEX + Distance + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.116 <- glm.nb(n ~ `Length Mm` + SEX + Distance + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.117 <- glm.nb(n ~ `Length Mm` + SEX + Distance + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 4 vars
+RS.glm.118 <- glm.nb(n ~ `Length Mm` + SEX + Distance + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.119 <- glm.nb(n ~ `Length Mm` + SEX + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.120 <- glm.nb(n ~ `Length Mm` + Distance + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 3 vars
+RS.glm.121 <- glm.nb(n ~ `Length Mm` + SEX + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.122 <- glm.nb(n ~ `Length Mm` + Distance + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.123 <- glm.nb(n ~ `Length Mm` + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 2 vars
+RS.glm.124 <- glm.nb(n ~ `Length Mm` + Julian, data = riverdist_parentage_hogan, link = log)
+
+## 1 var
+
+# Intertidal
+## with and without sex/origin interactions
+RS.glm.125 <- glm.nb(n ~ `Length Mm` * SEX + Intertidal + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.126 <- glm.nb(n ~ `Length Mm` * SEX + Intertidal + Julian + origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.127 <- glm.nb(n ~ `Length Mm` + SEX + Intertidal + Julian * origin, data = riverdist_parentage_hogan, link = log)
+RS.glm.128 <- glm.nb(n ~ `Length Mm` + SEX + Intertidal + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 4 vars
+RS.glm.129 <- glm.nb(n ~ `Length Mm` + SEX + Intertidal + Julian, data = riverdist_parentage_hogan, link = log)
+RS.glm.130 <- glm.nb(n ~ `Length Mm` + Intertidal + Julian + origin, data = riverdist_parentage_hogan, link = log)
+
+## 3 vars
+RS.glm.131 <- glm.nb(n ~ `Length Mm` + Intertidal + Julian, data = riverdist_parentage_hogan, link = log)
+
+## 2 vars
+
+## 1 var
+
+```
+
+## GLM Summaries
+
+### GLM Models Ranked by Akaike Weight {#glm_summary}
+
+Here are the top models ranked by Akaike weights, which are another way of determining which model has the best fit, by calculating their conditional probabilities.
+```{r bernston_glm_summary}
+glm_model_summary <- bind_rows(
+  lapply(c(1:131), function(i) {
+    fit <- get(paste0("RS.glm.", i))
+    summary(fit)$coefficients %>% 
+      as_tibble(rownames = "variable") %>% 
+      mutate(name = paste0("RS.glm.", i)) %>% 
+      mutate(model = as.character(fit$call)[2]) %>% 
+      mutate(AIC = fit$aic) %>% 
+      mutate(residual_deviance = fit$deviance) %>% 
+      mutate(residual_df = fit$df.residual) %>% 
+      mutate(null_deviance = fit$null.deviance) %>% 
+      mutate(null_df = fit$df.null)
+  } )
+)
+
+glm_aic <- bind_rows(
+  lapply(paste0("RS.glm.", 1:131), function(mod) {
+    data.frame(row.names = mod,
+               df = length(get(mod)$coefficients) + 1,
+               AIC = AIC(get(mod))
+    )
+  } )
+)
+
+rownames(glm_aic) <- paste0("RS.glm.", 1:131)
+
+glm_aic <- glm_aic %>% 
+  mutate(AIC_weight = as.numeric(Weights(glm_aic))) %>% 
+  mutate(name = rownames(glm_aic)) %>% 
+  arrange(AIC) %>% 
+  mutate(delta_AIC = AIC - min(AIC))
+
+glm_model_summary <- glm_model_summary %>% 
+  left_join(glm_aic, by = c("name", "AIC")) %>% 
+  arrange(AIC)
+  # select(name, model, df, AIC, delta_AIC, AIC_weight, variable, Estimate, `Std. Error`, residual_deviance, residual_df, null_deviance, null_df)
+
+glm_model_summary %>% 
+  group_by(name, df, residual_deviance, null_deviance) %>% 
+  summarise(AIC_weight = round(max(AIC_weight), 3), model = unique(model), deviance_explained = round(1 - (max(residual_deviance) / max(null_deviance)), 3)) %>% 
+  ungroup() %>% 
+  select(name, df, AIC_weight, deviance_explained, model) %>% 
+  arrange(desc(AIC_weight))
+
+write_csv(glm_model_summary, "../data/hogan_14_16/hogan_glm_summary.csv")
+```
+
+It looks like all of the top models, to some degree, incorporate all potential explanatory variables. The percent of deviance explained (1 - residual_deviance / null_deviance) ~ 5%. This is the ratio indicating how close the model fit is to a perfect fit (interpolation) or the worst possible model (intercept only).
+
+### Detailed Model Summary
+
+```{r}
+glm_model_summary %>% 
+  select(-`Std. Error`, -`z value`, -`Pr(>|z|)`) %>% 
+  spread(variable, Estimate, fill = NA)
+```
+
+### Top Model Summary
+
+Here is the summary of the top model, which includes parent body length, spawning location (distance), parent sex, and origin.
+```{r}
+summary(RS.glm.59)
+```
+
+What are the coefficients and 95% CIs for each of the explanatory variables?
+```{r}
+(est <- cbind(Estimate = coef(RS.glm.59), confint(RS.glm.59)))
+```
+
+**Note** those coefficients are still in log space due to the logit link function. If we take the exponent, we can look at incident ratios.
+```{r}
+exp(est)
+```
+
+Looking at these incident ratios, we can see that the RRS of hatchery-origin fish relative to natural-origin fish is ~ 0.59 (0.39-0.86) holding the other variables constant (length, distance, and sex). Also, the percent change in the number of offspring increases by ~ 1.1% for every Mm increase in length, decreases by ~ 0.2% for every meter further upstream a fish is sampled, and increases ~ 52% for males relative to females.
+
+### Top 10 Model Coefficients
+
+Based on our top model, it looks like the RRS of hatchery- to natural-origin fish is ~ 0.59 holding all other variables constant. However, given the number of models that we ran, there were several fairly similar top models that had relatively high Akaike weights and **all** of them included *origin* as a significant variable in the model. We can take a weighted average of the *origin* term for the top 10 models to see how well it compares to our estimate from the top model.
+```{r}
+glm_model_summary %>% 
+  filter(variable == "originHatchery") %>% 
+  top_n(n = 10, wt = AIC_weight) %>% 
+  filter(name != "RS.glm.116") %>%  # filter out 116 due to interaction term
+  mutate(weighted_origin = Estimate * AIC_weight) %>% 
+  summarise(RRS = exp(sum(weighted_origin) / sum(AIC_weight)))
+```
+
+Fairly similar to out top model.
+
+### Global GLM Summary
+
+We constructed 131 negative binomial models *a prior* based on the most reasonable combinations of our potential explanatory variables. We also included quadratic terms for *Julian* and *Length Mm* based on our data exploration [above](#multi-collinearity). There was no clear top model based on [Akaike weights](#glm_summary), however, all top models were relatively similar and included almost all explanatory variables. This indicates that if we consider all of the data jointly, parent body size, parent sample date, parent sample location, and origin all had a statistically significant impact of RS. If we specifically consider the origin term, it appears that hatchery-origin fish had a RRS ~ 0.56 with all else equal (i.e. accounting for differences in length, sample date, and sample location).
+
+## Female
+
+The Global GLM's that we did above had both male and female parents grouped together. Here we will construct simple models and consider the two sexes separately as was done by [Janowitz-Koch et al. 2018](https://onlinelibrary.wiley.com/doi/full/10.1111/eva.12725).
+
+### Negative binomial GLMs
+
+```{r Female Even GLM}
+Female.even <-  
+  riverdist_parentage_hogan %>% 
+  # mutate(Julian = yday(`Sample Date`)) %>% 
+  filter(SEX == "F")
+
+RS.glm.F.1 <- glm.nb(n ~ `Sample Date` + `Length Mm` + origin + Distance, data = Female.even, link = log)
+RS.glm.F.2 <- glm.nb(n ~ `Sample Date` + `Length Mm` + origin, data = Female.even, link = log)
+RS.glm.F.3 <- glm.nb(n ~ `Length Mm` + origin, data = Female.even, link = log)
+RS.glm.F.4 <- glm.nb(n ~ origin, data = Female.even, link = log)
+RS.glm.F.5 <- glm.nb(n ~ `Length Mm`, data = Female.even, link = log)
+RS.glm.F.6 <- glm.nb(n ~ `Sample Date`, data = Female.even, link = log)
+RS.glm.F.7 <- glm.nb(n ~ Distance, data = Female.even, link = log)
+RS.glm.F.8 <- glm.nb(n ~ `Sample Date` + `Length Mm` + Distance, data = Female.even, link = log)
+RS.glm.F.9 <- glm.nb(n ~ `Length Mm` + Distance, data = Female.even, link = log)
+RS.glm.F.10 <- glm.nb(n ~ `Sample Date` + origin, data = Female.even, link = log)
+RS.glm.F.11 <- glm.nb(n ~ `Sample Date` + Distance, data = Female.even, link = log)
+RS.glm.F.12 <- glm.nb(n ~ `Sample Date` + Distance + origin, data = Female.even, link = log)
+RS.glm.F.13 <- glm.nb(n ~ Distance + origin, data = Female.even, link = log)
+RS.glm.F.14 <- glm.nb(n ~ Distance * origin, data = Female.even, link = log)
+RS.glm.F.15 <- glm.nb(n ~ `Sample Date` * origin, data = Female.even, link = log)
+RS.glm.F.16 <- glm.nb(n ~ `Length Mm` * origin, data = Female.even, link = log)
+RS.glm.F.17 <- glm.nb(n ~ `Sample Date` + `Length Mm` + origin + Intertidal, data = Female.even, link = log)
+RS.glm.F.18 <- glm.nb(n ~ Intertidal, data = Female.even, link = log)
+RS.glm.F.19 <- glm.nb(n ~ `Sample Date` + `Length Mm` + Intertidal, data = Female.even, link = log)
+RS.glm.F.20 <- glm.nb(n ~ `Length Mm` + Intertidal, data = Female.even, link = log)
+RS.glm.F.21 <- glm.nb(n ~ `Sample Date` + Intertidal, data = Female.even, link = log)
+RS.glm.F.22 <- glm.nb(n ~ `Sample Date` + Intertidal + origin, data = Female.even, link = log)
+RS.glm.F.23 <- glm.nb(n ~ Intertidal + origin, data = Female.even, link = log)
+RS.glm.F.24 <- glm.nb(n ~ Intertidal * origin, data = Female.even, link = log)
+```
+
+### Extract Akaike Weights {#female_glm}
+
+Akaike weights are another way of determining which model has the best fit, by calculating their conditional probabilities. 
+```{r female_glm_summary}
+female_glm_model_summary <- bind_rows(
+  lapply(c(1:24), function(i) {
+    fit <- get(paste0("RS.glm.F.", i))
+    summary(fit)$coefficients %>% 
+      as_tibble(rownames = "variable") %>% 
+      mutate(name = paste0("RS.glm.F.", i)) %>% 
+      mutate(model = as.character(fit$call)[2]) %>% 
+      mutate(AIC = fit$aic) %>% 
+      mutate(residual_deviance = fit$deviance) %>% 
+      mutate(residual_df = fit$df.residual) %>% 
+      mutate(null_deviance = fit$null.deviance) %>% 
+      mutate(null_df = fit$df.null)
+  } )
+)
+
+female_glm_aic <- bind_rows(
+  lapply(paste0("RS.glm.F.", 1:24), function(mod) {
+    data.frame(row.names = mod,
+               df = length(get(mod)$coefficients) + 1,
+               AIC = AIC(get(mod))
+    )
+  } )
+)
+
+rownames(female_glm_aic) <- paste0("RS.glm.F.", 1:24)
+
+female_glm_aic <- female_glm_aic %>% 
+  mutate(AIC_weight = as.numeric(Weights(female_glm_aic))) %>% 
+  mutate(name = rownames(female_glm_aic)) %>% 
+  arrange(AIC) %>% 
+  mutate(delta_AIC = AIC - min(AIC))
+
+female_glm_model_summary <- female_glm_model_summary %>% 
+  left_join(female_glm_aic, by = c("name", "AIC")) %>% 
+  arrange(AIC)
+  # select(name, model, df, AIC, delta_AIC, AIC_weight, variable, Estimate, `Std. Error`, residual_deviance, residual_df, null_deviance, null_df)
+
+female_glm_model_summary %>% 
+  group_by(name, df, residual_deviance, null_deviance) %>% 
+  summarise(AIC_weight = round(max(AIC_weight), 3), model = unique(model), deviance_explained = round(1 - (max(residual_deviance) / max(null_deviance)), 3)) %>% 
+  ungroup() %>% 
+  select(name, df, AIC_weight, deviance_explained, model) %>% 
+  arrange(desc(AIC_weight))
+
+write_csv(female_glm_model_summary, "../data/hogan_14_16/hogan_glm_female_summary.csv")
+```
+
+It looks like the top model has 25% of the Akaike Weight and incorporates all potential explanatory variables. The proportion of deviance explained (1 - residual_deviance / null_deviance) ~ 6%. This is the ratio indicating how close the model fit is to a perfect fit (interpolation) or the worst possible model (intercept only).
+
+### Top Model Summary
+
+Here is the summary of the top female model, which includes parent body length, intertidal, parent sample date, and origin.
+```{r}
+summary(RS.glm.F.17)
+```
+
+What are the coefficients and 95% CIs for each of the explanatory variables?
+```{r}
+(female_est <- cbind(Estimate = coef(RS.glm.F.17), confint(RS.glm.F.17)))
+```
+
+**Note** those coefficients are still in log space due to the logit link function. If we take the exponent, we can look at incident ratios.
+```{r}
+exp(female_est)
+```
+
+The incident ratios reveal that the RRS of hatchery-origin to natural-origin Pink Salmon is ~0.42 (95% CI’s: 0.24 – 0.71), holding the other variables (length, intertidal, and date) constant. The number of offspring increased by ~2.7% for every day later that a parent was sampled and 0.6% for every mm in parent length. Pink Salmon sampled upstream had ~59% the RS relative to parents sampled in the intertidal.  
+
+### Heirarchical Partitioning
+
+Now that we know what our top model is, we want to know the independent contributions of each variable in our multivariate data set.
+
+Randy Peterson *hot wired* this to accept negative binomial GLM. **Note** needs to be numeric data.
+
+#### Top Model
+
+```{r}
+Female.even_numeric <- Female.even %>%
+  mutate(date = yday(`Sample Date`),
+         origin = as.numeric(as.factor(origin)),
+         intertidal = as.numeric(as.factor(Intertidal))) %>%
+  rename(distance = Distance,
+         length = "Length Mm") %>%
+  select(n, date, length, origin, intertidal)
+
+RS.glm.F.17_numeric <-
+  glm.nb(n ~ date + length + origin + intertidal,
+         data = Female.even_numeric,
+         link = log)
+
+hier.part(
+  y = Female.even_numeric$n,
+  xcan = select(Female.even_numeric, origin, intertidal, date, length),
+  family = "glm.nb",
+  gof = "logLik"
+) #nb
+```
+
+## Male
+
+The Global GLM's that we did above had both male and male parents grouped together. Here we will construct simple models and consider the two sexes separately as was done by [Janowitz-Koch et al. 2018](https://onlinelibrary.wiley.com/doi/full/10.1111/eva.12725).
+
+### Negative binomial GLMs
+
+```{r Male Even GLM}
+Male.even <-  
+  riverdist_parentage_hogan %>% 
+  # mutate(Julian = yday(`Sample Date`)) %>% 
+  filter(SEX == "M")
+
+RS.glm.M.1 <- glm.nb(n ~ `Sample Date` + `Length Mm` + origin + Distance, data = Male.even, link = log)
+RS.glm.M.2 <- glm.nb(n ~ `Sample Date` + `Length Mm` + origin, data = Male.even, link = log)
+RS.glm.M.3 <- glm.nb(n ~ `Length Mm` + origin, data = Male.even, link = log)
+RS.glm.M.4 <- glm.nb(n ~ origin, data = Male.even, link = log)
+RS.glm.M.5 <- glm.nb(n ~ `Length Mm`, data = Male.even, link = log)
+RS.glm.M.6 <- glm.nb(n ~ `Sample Date`, data = Male.even, link = log)
+RS.glm.M.7 <- glm.nb(n ~ Distance, data = Male.even, link = log)
+RS.glm.M.8 <- glm.nb(n ~ `Sample Date` + `Length Mm` + Distance, data = Male.even, link = log)
+RS.glm.M.9 <- glm.nb(n ~ `Length Mm` + Distance, data = Male.even, link = log)
+RS.glm.M.10 <- glm.nb(n ~ `Sample Date` + origin, data = Male.even, link = log)
+RS.glm.M.11 <- glm.nb(n ~ `Sample Date` + Distance, data = Male.even, link = log)
+RS.glm.M.12 <- glm.nb(n ~ `Sample Date` + Distance + origin, data = Male.even, link = log)
+RS.glm.M.13 <- glm.nb(n ~ Distance + origin, data = Male.even, link = log)
+RS.glm.M.14 <- glm.nb(n ~ Distance * origin, data = Male.even, link = log)
+RS.glm.M.15 <- glm.nb(n ~ `Sample Date` * origin, data = Male.even, link = log)
+RS.glm.M.16 <- glm.nb(n ~ `Length Mm` * origin, data = Male.even, link = log)
+RS.glm.M.17 <- glm.nb(n ~ `Sample Date` + `Length Mm` + origin + Intertidal, data = Male.even, link = log)
+RS.glm.M.18 <- glm.nb(n ~ Intertidal, data = Male.even, link = log)
+RS.glm.M.19 <- glm.nb(n ~ `Sample Date` + `Length Mm` + Intertidal, data = Male.even, link = log)
+RS.glm.M.20 <- glm.nb(n ~ `Length Mm` + Intertidal, data = Male.even, link = log)
+RS.glm.M.21 <- glm.nb(n ~ `Sample Date` + Intertidal, data = Male.even, link = log)
+RS.glm.M.22 <- glm.nb(n ~ `Sample Date` + Intertidal + origin, data = Male.even, link = log)
+RS.glm.M.23 <- glm.nb(n ~ Intertidal + origin, data = Male.even, link = log)
+RS.glm.M.24 <- glm.nb(n ~ Intertidal * origin, data = Male.even, link = log)
+```
+
+### Extract Akaike Weights {#male_glm}
+
+Akaike weights are another way of determining which model has the best fit, by calculating their conditional probabilities. 
+```{r male_glm_summary}
+male_glm_model_summary <- bind_rows(
+  lapply(c(1:24), function(i) {
+    fit <- get(paste0("RS.glm.M.", i))
+    summary(fit)$coefficients %>% 
+      as_tibble(rownames = "variable") %>% 
+      mutate(name = paste0("RS.glm.M.", i)) %>% 
+      mutate(model = as.character(fit$call)[2]) %>% 
+      mutate(AIC = fit$aic) %>% 
+      mutate(residual_deviance = fit$deviance) %>% 
+      mutate(residual_df = fit$df.residual) %>% 
+      mutate(null_deviance = fit$null.deviance) %>% 
+      mutate(null_df = fit$df.null)
+  } )
+)
+
+male_glm_aic <- bind_rows(
+  lapply(paste0("RS.glm.M.", 1:24), function(mod) {
+    data.frame(row.names = mod,
+               df = length(get(mod)$coefficients) + 1,
+               AIC = AIC(get(mod))
+    )
+  } )
+)
+
+rownames(male_glm_aic) <- paste0("RS.glm.M.", 1:24)
+
+male_glm_aic <- male_glm_aic %>% 
+  mutate(AIC_weight = as.numeric(Weights(male_glm_aic))) %>% 
+  mutate(name = rownames(male_glm_aic)) %>% 
+  arrange(AIC) %>% 
+  mutate(delta_AIC = AIC - min(AIC))
+
+male_glm_model_summary <- male_glm_model_summary %>% 
+  left_join(male_glm_aic, by = c("name", "AIC")) %>% 
+  arrange(AIC)
+  # select(name, model, df, AIC, delta_AIC, AIC_weight, variable, Estimate, `Std. Error`, residual_deviance, residual_df, null_deviance, null_df)
+
+male_glm_model_summary %>% 
+  group_by(name, df, residual_deviance, null_deviance) %>% 
+  summarise(AIC_weight = round(max(AIC_weight), 3), model = unique(model), deviance_explained = round(1 - (max(residual_deviance) / max(null_deviance)), 3)) %>% 
+  ungroup() %>% 
+  select(name, df, AIC_weight, deviance_explained, model) %>% 
+  arrange(desc(AIC_weight))
+
+write_csv(male_glm_model_summary, "../data/hogan_14_16/hogan_glm_male_summary.csv")
+```
+
+It looks like the top model has 34% of the Akaike Weight and incorporates length and distance. The proportion of deviance explained (1 - residual_deviance / null_deviance) ~ 4%. This is the ratio indicating how close the model fit is to a perfect fit (interpolation) or the worst possible model (intercept only).
+
+### Top Model Summary
+
+Here is the summary of the top male model, which includes parent body length and spawning location (distance).
+```{r}
+summary(RS.glm.M.9)
+```
+
+What are the coefficients and 95% CIs for each of the explanatory variables?
+```{r}
+(male_est <- cbind(Estimate = coef(RS.glm.M.9), confint(RS.glm.M.9)))
+```
+
+**Note** those coefficients are still in log space due to the logit link function. If we take the exponent, we can look at incident ratios.
+```{r}
+exp(male_est)
+```
+
+The percent change in the number of offspring increases by ~ 1.1% for every Mm increase in length and decreases by ~ 0.3% for every meter further upstream a fish is sampled.
+
+### Heirarchical Partitioning
+
+Now that we know what our top model is, we want to know the independent contributions of each variable in our multivariate data set.
+
+Randy Peterson *hot wired* this to accept negative binomial GLM. **Note** needs to be numeric data.
+
+#### Top Model
+
+```{r}
+Male.even_numeric <- Male.even %>%
+  mutate(date = yday(`Sample Date`),
+         origin = as.numeric(as.factor(origin))) %>%
+  rename(distance = Distance,
+         length = "Length Mm") %>%
+  select(n, length, distance)
+
+RS.glm.M.9_numeric <-
+  glm.nb(n ~ length + distance,
+         data = Male.even_numeric,
+         link = log)
+
+hier.part(
+  y = Male.even_numeric$n,
+  xcan = select(Male.even_numeric, length, distance),
+  family = "glm.nb",
+  gof = "logLik"
+) #nb
+```
+
+# Summary
+
+In summary, while there are many explanatory variables that impact RS such as body size, sample date, and sample location (distance from stream mouth), we see that there is still a significant reduction in RS for hatchery-origin fish relative to natural-origin fish when we consider all parents pooled. When we consider all potential parents together (both sexes), we end up with RRS ~ 0.59 in the top model. Differences in RS between hatchery- and natural-origin fish appear to be statistically insignificant for males when we consider males and females separately.
+ 

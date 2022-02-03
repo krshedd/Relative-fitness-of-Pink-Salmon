@@ -1,0 +1,848 @@
+---
+title: "Figures for Hogan-Stockdale 13-16 MS"
+author: "Kyle Shedd & Emily Lescak"
+output:
+  html_notebook:
+    theme: united
+    toc: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+The purpose of this notebook is to create figures for the manuscript focused on RRS from Hogan and Stockdale for years 2013-2016.
+
+```{r setup, include=FALSE}
+library(coin)
+library(MASS)
+library(scales)
+library(tidyverse)
+# library(leaflet)
+library(lubridate)
+library(PBSmapping)
+library(grid)
+library(ggthemes)
+library(mapproj) 
+library(gridExtra)
+# Load
+```
+
+# Figure 1: Map of study area
+
+Try PBSmapping, clunky, but great basemap for AK coastlines. Got the idea from Ben Williams GitHub [link](https://ben-williams.github.io/updated_ggplot_figures.html). Still used the idea from Quantitative Palaeoecology [link](https://quantpalaeo.wordpress.com/2016/06/05/ggplot2-maps-with-inset/)
+
+```{r map of study area, message=FALSE, warning=FALSE}
+# Load data
+dat <- read_csv("../data/GIS/inputs/map_data.csv")
+
+dat <- dat %>%
+  mutate(Legend = case_when(type == "Hogan" ~ "Hogan Bay",
+                            type == "Fitness Stream" & name == "Stockdale" ~ "Stockdale Creek",
+                            type == "Fitness Stream" & name != "Stockdale"~ "Other fitness streams",
+                            type == "Hatchery" & name != "VFDA" ~ "PWSAC hatchery",
+                            name == "VFDA" ~ "VFDA hatchery")) %>% 
+  mutate(Legend = factor(x = Legend, levels = c("Hogan Bay", "Stockdale Creek", "Other fitness streams", "VFDA hatchery", "PWSAC hatchery"))) %>% 
+  mutate(type = case_when(type == "Hogan" ~ "Current study",
+                          name == "Stockdale" ~ "Current study",
+                          TRUE ~ type)) %>% 
+  mutate(abbr = case_when(name == "AFK" ~ "AFK",
+                          name == "WHN" ~ "WN",
+                          name == "Cannery Creek" ~ "CC",
+                          name == "VFDA" ~ "SG"))
+
+x_lim <- range(dat$long) + c(-0.1, 0.1)
+y_lim <- range(dat$lat) + c(-0.2, 0.2)
+
+dat <- dat %>%
+  filter(type != "City")
+
+# Plot map with PBS mapping
+data("nepacLLhigh")
+ak <- nepacLLhigh %>% 
+  dplyr::select(group = PID, POS = POS,long = X, lat = Y)
+
+maptheme <- theme(
+  panel.grid = element_blank(),
+  panel.border = element_rect(fill = NA, colour = "black"),
+  panel.background = element_blank()
+)
+
+# PWS map
+pws_map <- ggplot() + 
+  geom_polygon(data = ak, aes(long, lat, group = group), fill = "grey90", color = "black", lwd = 0.3) +
+  geom_point(data = dat, aes(x = long, y = lat, fill = Legend, shape = Legend, size = Legend), stroke = 1.5) +  # shape = 21, colour = "black",
+  scale_shape_manual(values = c(21, 21, 24, 22, 22)) +
+  scale_size_manual(values = c(5, 5, 3, 5, 5)) +
+  geom_label(data = filter(dat, type == "Hatchery"), aes(long, lat, label = abbr), hjust = 0, nudge_x = 0.1) +
+  geom_segment(aes(x = -148.7, xend = -148.7, y = 59.85, yend = 60.02), lineend = "butt", linejoin = "round", size = 2, arrow = arrow(length = unit(0.2, "inches"))) +
+  annotate("text", label = "Prince\nWilliam\nSound", x = -147, y = 60.6, size = 5, colour = "black") +
+  theme(panel.background = element_rect(fill = 'white')) +
+  scale_y_continuous(breaks = c(60.0, 60.5, 61.0)) +
+  xlab(expression(paste(Longitude^o, ~'W'))) +
+  ylab(expression(paste(Latitude^o, ~'N'))) +
+  coord_map(xlim = x_lim, ylim = y_lim) +
+  maptheme
+
+# north2(pws_map, symbol = 12, 0.18, 0.20)  # couldn't get this to work with the inset
+
+# Inset map
+ak_map <- ggplot() + 
+  geom_polygon(data = ak, aes(long, lat, group = group), fill = "grey90", color = "black", lwd = 0.3) +
+  borders("world", xlim = c(-170, -130, ylim = c(20, 50)), lwd = 1) +
+  geom_rect(data = data.frame(), aes(xmin = x_lim[1], xmax = x_lim[2], ymin = y_lim[1], ymax = y_lim[2]), colour = "red", fill = NA, lwd = 1) +
+  annotate("text", label = "Alaska", x = -150.5, y = 63.5, size = 5, colour = "black") +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  coord_map(xlim = c(-170, -130), ylim = c(53, 65))
+```
+
+```{r save_map_pdf}
+pdf(file = "../figures/Figure_1.pdf", width = 6.5, height = 6.5)
+grid.newpage()
+vp_b <- viewport(width = 1, height = 1, x = 0.5, y = 0.5)  # the larger map
+vp_a <- viewport(width = 0.23, height = 0.35, x = 0.585, y = 0.32)  # the inset in lower left
+print(pws_map, vp = vp_b)
+print(ak_map + maptheme, vp = vp_a)
+dev.off()
+```
+
+# Figure 2: Sample sizes throughout run
+
+```{r sample sizes throughout run}
+hogan_paired_13_15_filter <- read_csv("../data/hogan_13_15/hogan_paired_13_15_filter.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery")))
+
+hogan_paired_14_16_filter <- read_csv("../data/hogan_14_16/hogan_paired_14_16_filter.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery")))
+
+stock_paired_13_15_filter <- read_csv("../data/stockdale_13_15/stockdale_paired_13_15_filter.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery")))
+
+stock_paired_14_16_filter <- read_csv("../data/stockdale_14_16/stockdale_paired_14_16_filter.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery")))
+
+ymax <- max(c(
+  hogan_paired_13_15_filter %>% count(date) %>% top_n(n = 1) %>% pull(n),
+  hogan_paired_14_16_filter %>% count(date) %>% top_n(n = 1) %>% pull(n),
+  stock_paired_13_15_filter %>% count(date) %>% top_n(n = 1) %>% pull(n),
+  stock_paired_14_16_filter %>% count(date) %>% top_n(n = 1) %>% pull(n)
+))
+
+xmin <- min(c(
+  min(hogan_paired_13_15_filter$DOY),
+  min(hogan_paired_14_16_filter$DOY),
+  min(hogan_paired_13_15_filter$DOY),
+  min(hogan_paired_13_15_filter$DOY)
+))
+
+xmax <- max(c(
+  max(hogan_paired_13_15_filter$DOY),
+  max(hogan_paired_14_16_filter$DOY),
+  max(hogan_paired_13_15_filter$DOY),
+  max(hogan_paired_13_15_filter$DOY)
+))
+
+#Stacked
+Hogan_Odd <- hogan_paired_13_15_filter %>% 
+  ggplot(aes(x= DOY)) +
+  geom_bar(aes(fill=origin)) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = c(0.85, 0.75),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(1, "line"),
+        panel.grid = element_blank(),
+        axis.title.x = element_blank()) +
+  scale_y_continuous(limits = c(0, ymax), breaks = seq(0, 800, by = 200)) +
+  scale_x_continuous(limits = c(xmin, xmax), breaks = seq(220, 270, by = 10), labels = format(x = (as.Date("2012-12-31") + seq(220, 270, by = 10)), "%b %d")) +
+  facet_grid(`Sample Year` ~ .) +
+  labs(title = "Hogan", y = "Number of Samples", fill = "Origin") +
+  ylab(expression(atop("Odd", paste("Number of Samples"))))
+
+Hogan_Even <- hogan_paired_14_16_filter %>% 
+  ggplot(aes(x= DOY)) +
+  geom_bar(aes(fill=origin)) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = 'none',
+        panel.grid = element_blank()) +
+  scale_y_continuous(limits = c(0, ymax), breaks = seq(0, 800, by = 200)) +
+  scale_x_continuous(limits = c(xmin, xmax), breaks = seq(220, 270, by = 10), labels = format(x = (as.Date("2012-12-31") + seq(220, 270, by = 10)), "%b %d")) +
+  facet_grid(`Sample Year` ~ .) +
+  labs(y = "Number of Samples", x = "Sample Date") +
+  ylab(expression(atop("Even", paste("Number of Samples"))))
+
+Stock_Odd <- stock_paired_13_15_filter %>% 
+  ggplot(aes(x=DOY)) +
+  geom_bar(aes(fill=origin)) +
+  theme_bw(base_size = 14) +
+  scale_y_continuous(limits = c(0, ymax), breaks = seq(0, 800, by = 200)) +
+  scale_x_continuous(limits = c(xmin, xmax), breaks = seq(220, 270, by = 10), labels = format(x = (as.Date("2012-12-31") + seq(220, 270, by = 10)), "%b %d")) +
+  theme(legend.position = 'none',
+        panel.grid = element_blank(),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank()) +
+  facet_grid(`Sample Year` ~ .) +
+  labs(title = "Stockdale")
+
+Stock_Even <- stock_paired_14_16_filter %>% 
+  ggplot(aes(x=DOY)) +
+  geom_bar(aes(fill=origin)) +
+  theme_bw(base_size = 14) +
+  scale_y_continuous(limits = c(0, ymax), breaks = seq(0, 800, by = 200)) +
+  scale_x_continuous(limits = c(xmin, xmax), breaks = seq(220, 270, by = 10), labels = format(x = (as.Date("2012-12-31") + seq(220, 270, by = 10)), "%b %d")) +
+  theme(legend.position = 'none',
+        panel.grid = element_blank(),
+        axis.title.y = element_blank()) +
+  facet_grid(`Sample Year` ~ .) +
+  labs(x = "Sample Date")
+
+Figure_2 <- 
+  gridExtra::grid.arrange(Hogan_Odd, Stock_Odd, Hogan_Even, Stock_Even, nrow = 2, widths = c(1.10, 1))  # added width argument to get plot area equal
+
+ggsave("Figure_2.pdf", plot = Figure_2, path = "../figures/", height = 6, width = 12)
+```
+
+# Figure 3: Reproductive success
+
+```{r Plot RS}
+hogan_paired_13_15_filter_parents <- read_csv("../data/hogan_13_15/hogan_paired_13_15_filter_parents.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>% 
+  mutate(SEX = case_when(SEX == "M" ~ "Male",
+                         SEX == "F" ~ "Female"))
+
+hogan_paired_14_16_filter_parents <- read_csv("../data/hogan_14_16/hogan_paired_14_16_filter_parents.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>% 
+  mutate(SEX = case_when(SEX == "M" ~ "Male",
+                         SEX == "F" ~ "Female"))
+
+stock_paired_13_15_filter_parents <- read_csv("../data/stockdale_13_15/stockdale_paired_13_15_filter_parents.csv")%>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>% 
+  mutate(SEX = case_when(SEX == "M" ~ "Male",
+                         SEX == "F" ~ "Female"))
+
+stock_paired_14_16_filter_parents <- read_csv("../data/stockdale_14_16/stockdale_paired_14_16_filter_parents.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>% 
+  mutate(SEX = case_when(SEX == "M" ~ "Male",
+                         SEX == "F" ~ "Female"))
+
+# make x-max
+# xmax <- max(c(
+#   max(hogan_paired_13_15_filter_parents$n),
+#   max(paired_14_16_filter_parents$n),
+#   max(stock_paired_13_15_filter_parents$n),
+#   max(stock_paired_14_16_filter_parents$n)
+# )) + 0.5
+
+Hogan_Odd_RS <- hogan_paired_13_15_filter_parents %>% 
+  count(SEX, origin, n) %>% 
+  group_by(SEX, origin) %>% 
+  mutate(p = nn / sum(nn)) %>% 
+  filter(n < 20) %>% 
+  ggplot(aes(x = n, y = p, fill = origin)) +
+  geom_col(position = position_dodge2(preserve="single")) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = c(0.85, 0.75),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(1, "line"),
+        panel.grid = element_blank()) +
+  scale_y_continuous(limits = c(0,1), breaks = seq(0,1, by = 0.1)) +
+  scale_x_continuous(limits = c(-0.5, max(stock_paired_14_16_filter_parents$n) + 0.5), breaks = seq(0,20, by = 2)) +
+  facet_grid(~ SEX, labeller = labeller(F = "Female", M = "Male")) +
+  labs(title="Hogan",
+       fill = "Parent origin") +
+  ylab(expression(atop("Odd", paste("Proportion of Parents")))) +
+  xlab(" ")
+
+Hogan_Even_RS <- hogan_paired_14_16_filter_parents %>% 
+  count(SEX, origin, n) %>% 
+  group_by(SEX, origin) %>% 
+  mutate(p = nn / sum(nn)) %>% 
+  ggplot(aes(x = n, y = p, fill = origin)) +
+  geom_col(position = position_dodge2(preserve="single")) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = 'none',
+        panel.grid = element_blank()) +
+  scale_y_continuous(limits = c(0,1), breaks = seq(0,1, by = 0.1)) +
+  scale_x_continuous(limits = c(-0.5, max(stock_paired_14_16_filter_parents$n) + 0.5), breaks = seq(0,20, by = 2)) +
+  facet_grid(~ SEX) +
+  labs(fill = "Parent origin") +
+  xlab("Number of Offspring (RS)")+
+  ylab(expression(atop("Even", paste("Proportion of Parents")))) 
+
+Stockdale_Odd_RS <- stock_paired_13_15_filter_parents %>% 
+  count(SEX, origin, n) %>% 
+  group_by(SEX, origin) %>% 
+  mutate(p = nn / sum(nn)) %>% 
+  ggplot(aes(x = n, y = p, fill = origin)) +
+  geom_col(position = position_dodge2(preserve="single")) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = 'none',
+        panel.grid = element_blank()) +
+  scale_y_continuous(limits = c(0,1), breaks = seq(0,1, by = 0.1)) +
+  scale_x_continuous(limits = c(-0.5, max(stock_paired_14_16_filter_parents$n) + 0.5), breaks = seq(0,20, by = 2)) +
+  facet_grid(~ SEX, labeller = labeller(F = "Female", M = "Male")) +
+  labs(title="Stockdale",
+       fill = "Parent origin") +
+  ylab(" ") +
+  xlab (" ")
+
+Stockdale_Even_RS <- stock_paired_14_16_filter_parents %>% 
+  count(SEX, origin, n) %>% 
+  group_by(SEX, origin) %>% 
+  mutate(p = nn / sum(nn)) %>% 
+  ggplot(aes(x = n, y = p, fill = origin)) +
+  geom_col(position = position_dodge2(preserve="single")) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = 'none',
+        panel.grid = element_blank()) +
+  scale_y_continuous(limits = c(0,1), breaks = seq(0,1, by = 0.1)) +
+  scale_x_continuous(limits = c(-0.5, max(stock_paired_14_16_filter_parents$n) + 0.5), breaks = seq(0,20, by = 2)) +
+  facet_grid(~ SEX, labeller = labeller(F = "Female", M = "Male")) +
+  labs(fill = "Parent origin") +
+  xlab("Number of Offspring (RS)") +
+  ylab(" ")
+
+Figure_3 <- 
+  grid.arrange(Hogan_Odd_RS, Stockdale_Odd_RS, Hogan_Even_RS, Stockdale_Even_RS, nrow = 2, widths = c(1.05, 1))
+
+ggsave("Figure_3.pdf", plot = Figure_3, path = "../figures/", height = 6, width = 12)
+```
+
+# Figure 4: RS by date
+
+```{r Plot RS by Date}
+Hogan_Even_Date <- hogan_paired_14_16_filter_parents %>% 
+  ggplot(aes(x = `Sample Date`, y = n, color = origin)) +
+  geom_jitter(height = 0, alpha = 0.5, size = 3) +
+  geom_smooth(method = "loess", se = TRUE, level = 0.95) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = c(0.85, 0.90),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(1, "line"),
+        panel.grid = element_blank()) +
+  scale_y_continuous(limits = c(-2,20), breaks = seq(0,20, by = 5)) +
+  facet_grid(SEX ~ .)+
+  labs(title = "Hogan",  colour = "Parent origin") +
+  xlab("Parent Sample Date") +
+  ylab("Number of Offspring (RS)")
+
+Stockdale_Even_Date <- stock_paired_14_16_filter_parents %>% 
+  ggplot(aes(x = `Sample Date`, y = n, color = origin)) +
+  geom_jitter(height = 0, alpha = 0.5, size = 3) +
+  geom_smooth(method = "loess", se = TRUE, level = 0.95) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = 'none',
+        panel.grid = element_blank()) +
+  scale_y_continuous(limits = c(-2,20), breaks = seq(0,20, by = 5)) +
+  facet_grid(SEX ~ .)+
+  labs(title = "Stockdale",  colour = "Parent origin") +
+  xlab("Parent Sample Date") +
+  ylab(" ")
+
+Figure_4 <- grid.arrange(Hogan_Even_Date, Stockdale_Even_Date, nrow = 1, widths = c(1, 1))
+
+ggsave("Figure_4.pdf", plot = Figure_4, path = "../figures/", height = 6, width = 12)
+
+```
+
+# Figure 5: RS by location
+
+``` {r Plot RS by Location}
+riverdist_parentage_hogan <-
+  read_csv("../data/hogan_14_16/riverdist_parentage_hogan.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>%
+  mutate(SEX = case_when(SEX == "M" ~ "Male",
+                         SEX == "F" ~ "Female"))
+
+riverdist_parentage_stock <-
+  read_csv("../data/stockdale_14_16/riverdist_parentage_stockdale.csv") %>% 
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>%
+  mutate(SEX = case_when(SEX == "M" ~ "Male",
+                         SEX == "F" ~ "Female"))
+
+Hogan_Location <- riverdist_parentage_hogan %>% 
+  ggplot(aes(x = Distance, y = n, color = origin)) +
+  geom_vline(aes(xintercept = hitide), color = "black", lwd = 1.5) +
+  geom_jitter(height = 0, alpha = 0.5, size = 3) +
+  geom_smooth(method = "loess", se = TRUE, level = 0.95) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = c(0.85, 0.90),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(1, "line"),
+        panel.grid = element_blank()) +
+  # scale_x_continuous(limits = c(0, 1500), breaks = seq(0, 1500, by = 250)) +
+  scale_y_continuous(limits = c(-2,20), breaks = seq(0,20, by = 5)) +
+  facet_grid(SEX ~ .)+
+  labs(title = "Hogan",  colour = "Parent origin") +
+  xlab("Distance from Stream Mouth (m)") +
+  ylab("Number of Offspring (RS)")
+
+
+Stockdale_Location <- riverdist_parentage_stock %>% 
+  ggplot(aes(x = Distance, y = n, color = origin)) +
+  geom_vline(aes(xintercept = hitide), color = "black", lwd = 1.5) +
+  geom_jitter(height = 0, alpha = 0.5, size = 3) +
+  geom_smooth(method = "loess", se = TRUE, level = 0.95) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "none",
+        panel.grid = element_blank()) +
+  # scale_x_continuous(limits = c(0, 1500), breaks = seq(0, 1500, by = 250)) +
+  scale_y_continuous(limits = c(-2,20), breaks = seq(0,20, by = 5)) +
+  facet_grid(SEX ~ .)+
+  labs(title = "Stockdale") +
+  xlab("Distance from Stream Mouth (m)") +
+  ylab("")
+
+
+Figure_5 <- grid.arrange(Hogan_Location, Stockdale_Location, nrow = 1, widths = c(1, 1))
+
+ggsave("Figure_5.pdf", plot = Figure_5, path = "../figures/", height = 6, width = 12)
+
+```
+
+# Figure 6: RS by length
+```{r Plot RS by Length}
+Hogan_Even_Length <- hogan_paired_14_16_filter_parents %>% 
+  filter(`Length Mm` > 300) %>% 
+  ggplot(aes(x = `Length Mm`, y = n, color = origin)) +
+  geom_jitter(height = 0, alpha = 0.5, size = 3) +
+  geom_smooth(method = "loess", se = TRUE, level = 0.95) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = c(0.85, 0.90),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(1, "line"),
+        panel.grid = element_blank()) +
+  # scale_x_continuous(limits = c(325, 500), breaks = seq(325, 500, by = 25)) +
+  scale_y_continuous(limits = c(-2,20), breaks = seq(0,20, by = 5)) +
+  facet_grid(SEX ~ .)+
+  labs(title = "Hogan",  colour = "Parent origin") +
+  xlab("Parent Length (mm)") +
+  ylab("Number of Offspring (RS)")
+
+Stockdale_Even_Length <- stock_paired_14_16_filter_parents %>% 
+  filter(`Length Mm` > 300) %>% 
+  ggplot(aes(x = `Length Mm`, y = n, color = origin)) +
+  geom_jitter(height = 0, alpha = 0.5, size = 3) +
+  geom_smooth(method = "loess", se = TRUE, level = 0.95) +
+  theme_bw(base_size = 14) +
+  theme(legend.position = 'none',
+        panel.grid = element_blank()) +
+  # scale_x_continuous(limits = c(325, 500), breaks = seq(325, 500, by = 25)) +
+  scale_y_continuous(limits = c(-2,20), breaks = seq(0,20, by = 5)) +
+  facet_grid(SEX ~ .)+
+  labs(title = "Stockdale",  colour = "Parent origin") +
+  xlab("Parent Length (mm)") +
+  ylab(" ")
+
+
+Figure_6 <- grid.arrange(Hogan_Even_Length, Stockdale_Even_Length, nrow = 1, widths = c(1, 1))
+
+ggsave("Figure_6.pdf", plot = Figure_6, path = "../figures/", height = 6, width = 12)
+```
+
+# Figure S1: Study design schematic
+
+This figure was created in Microsoft Powerpoint.
+
+# Figure S2: Heterozygosity distribution
+
+This figure was created during quality assurance analyses.
+
+# Figure S3: CKMRSim plot
+
+This figure is created in a separate notebook "Hogan_Stockdale_13_16_MS_CKMRSIM.Rmd".
+
+# Figure S4: RS by cross type
+``` {r Plot Cross Type}
+Hogan_parents_paired_14_16_cross <- read_csv("../data/hogan_14_16/hogan_parents_paired_14_16_cross.csv") %>% 
+  mutate(cross = factor(x = cross, levels = c("NN", "NH", "HN", "HH"))) 
+
+Stockdale_parents_paired_14_16_cross <- read_csv("../data/stockdale_14_16/stockdale_parents_paired_14_16_cross.csv") %>% 
+  mutate(cross = factor(x = cross, levels = c("NN", "NH", "HN", "HH"))) 
+
+Hogan_n <- Hogan_parents_paired_14_16_cross %>% 
+  count(cross, `Fish ID`, `Fish ID.par1`) %>% 
+  rename(nn = n) %>% 
+  count(cross) %>% 
+  rename(samp = n)
+
+Hogan_Cross_Type <- Hogan_parents_paired_14_16_cross %>% 
+  count(cross, `Fish ID`, `Fish ID.par1`) %>% 
+  count(cross, n) %>% 
+  complete(cross, n, fill = list(nn = 0)) %>% 
+  group_by(cross) %>% 
+  mutate(p = nn / sum(nn)) %>% 
+  left_join(Hogan_n, by = "cross") %>% 
+  mutate(cross_n = paste0(cross, " (n = ", samp, ")")) %>% 
+  ggplot(aes(x = n, y = p, fill = cross_n))+
+  geom_col(position = position_dodge2(preserve = "single"), width = 0.5) +
+  scale_y_continuous(limits = c(0,1), breaks = seq(0,1, by = 0.1)) +
+  scale_x_continuous(limits = c(0,5), breaks = seq(0, 5, by = 1)) +
+  labs(title = "Hogan",
+       fill = "Cross Type") +
+  xlab("Number of Offspring (RS)")+
+  ylab("Proportion of Families of Each Cross Type") +
+  theme_bw() +
+  theme(text = element_text(size = 20),
+        legend.position = c(0.7, 0.75),
+        panel.grid = element_blank())
+
+Stockdale_n <- Stockdale_parents_paired_14_16_cross %>% 
+  count(cross, `Fish ID`, `Fish ID.par1`) %>% 
+  rename(nn = n) %>% 
+  count(cross) %>% 
+  rename(samp = n)
+
+Stockdale_Cross_Type <- Stockdale_parents_paired_14_16_cross %>% 
+  count(cross, `Fish ID`, `Fish ID.par1`) %>% 
+  count(cross, n) %>% 
+  complete(cross, n, fill = list(nn = 0)) %>% 
+  group_by(cross) %>% 
+  mutate(p = nn / sum(nn)) %>% 
+  left_join(Stockdale_n, by = "cross") %>% 
+  mutate(cross_n = paste0(cross, " (n = ", samp, ")")) %>% 
+  ggplot(aes(x = n, y = p, fill = cross_n))+
+  geom_col(position = position_dodge2(preserve = "single"), width = 0.5) +
+  scale_y_continuous(limits = c(0,1), breaks = seq(0,1, by = 0.1)) +
+  scale_x_continuous(limits = c(0,5), breaks = seq(0, 5, by = 1)) +
+  labs(title = "Stockdale",
+       fill = "Cross Type") +
+  xlab("Number of Offspring (RS)")+
+  ylab(" ") +
+  theme_bw() +
+  theme(text = element_text(size = 20),
+        legend.position = c(0.7, 0.75),
+        panel.grid = element_blank())
+
+Figure_S4 <- grid.arrange(Hogan_Cross_Type, Stockdale_Cross_Type, nrow = 1)
+
+ggsave("Figure_S4.pdf", plot = Figure_S4, path = "../figures/", height = 6, width = 12)
+
+```
+
+# Table 1: Sample sizes
+
+## Genotyped
+
+Read in data for samples genotyped
+```{r}
+hogan_paired_13_15_filter <-
+  read_csv("../data/hogan_13_15/hogan_paired_13_15_filter.csv") %>%
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>% 
+  mutate(`Sample Date` = as.Date(x = `Sample Date`, format = "%d-%b-%y")) %>% 
+  mutate(stream = "Hogan")
+
+hogan_paired_14_16_filter <-
+  read_csv("../data/hogan_14_16/hogan_paired_14_16_filter.csv") %>%
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>% 
+  mutate(stream = "Hogan")
+
+stock_paired_13_15_filter <-
+  read_csv("../data/stockdale_13_15/stockdale_paired_13_15_filter.csv") %>%
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>% 
+  mutate(`Sample Date` = as.Date(x = `Sample Date`, format = "%d-%b-%y")) %>% 
+  mutate(stream = "Stockdale")
+
+stock_paired_14_16_filter <-
+  read_csv("../data/stockdale_14_16/stockdale_paired_14_16_filter.csv") %>%
+  mutate(origin = factor(x = origin, levels = c("Natural", "Hatchery"))) %>% 
+  mutate(stream = "Stockdale")
+
+(
+  join_genotyped <-
+    bind_rows(
+      hogan_paired_13_15_filter,
+      hogan_paired_14_16_filter,
+      stock_paired_13_15_filter,
+      stock_paired_14_16_filter
+    ) %>% 
+    dplyr::rename(year = `Sample Year`)
+)
+```
+
+Sample sizes genotyped
+```{r}
+join_genotyped %>% 
+  count(stream, year, origin) %>% 
+  pivot_wider(names_from = origin, values_from = n)
+```
+
+## Parentage
+
+Sample sizes assigned parentage
+```{r}
+(
+  join_parentage <-
+    bind_rows(
+      read_csv("../data/hogan_13_15/FRANz/parentage.csv"),
+      read_csv("../data/hogan_14_16/FRANz/parentage.csv"),
+      read_csv("../data/stockdale_13_15/FRANz/parentage.csv"),
+      read_csv("../data/stockdale_14_16/FRANz/parentage.csv")
+    ) %>%
+    filter(Posterior > 0.9) %>%
+    dplyr::select(Offspring, `Parent 1`, `Parent 2`) %>%
+    pivot_longer(
+      names_to = "Parent",
+      values_to = "Parent_ID",
+      cols = -Offspring
+    ) %>%
+    filter(!is.na(Parent_ID)) %>%
+    left_join(join_genotyped, by = c("Parent_ID" = "franz_id"))
+)
+```
+
+Sample sizes parentage by origin
+```{r}
+join_parentage %>% 
+  count(stream, year, origin) %>% 
+  pivot_wider(names_from = origin, values_from = n)
+```
+
+Sample sizes parentage by dyad/triad
+```{r}
+join_parentage %>% 
+  count(stream, year, Parent) %>% 
+  pivot_wider(names_from = Parent, values_from = n)
+```
+
+# Table 2: RS covariate distributions
+
+Get distance data
+```{r}
+(
+  riverdist <- bind_rows(
+    read_csv("../data/GIS/output/hogan_distances.csv"),
+    read_csv("../data/GIS/output/stockdale_distances.csv")
+  ) %>%
+    mutate(
+      Intertidal = case_when(dist2tide > 0 ~ "Upstream",
+                             dist2tide <= 0 ~ "Intertidal")
+    ) %>%
+    dplyr::rename(
+      Distance = mouthdist,
+      Segment = seg,
+      tidedist = hitide
+    )
+)
+```
+
+Join distance with other field data
+```{r}
+(join <- join_genotyped %>% 
+   mutate(dna_tray_code = str_pad(string = `DNA Tray Code`, width = 10, side = "left", pad = "0")) %>% 
+   unite(Sample, c(dna_tray_code, `DNA Tray Well Code`)) %>% 
+   inner_join(riverdist, by = "Sample") %>% 
+   dplyr::rename(sex = Sex)
+)
+```
+
+Got this helper function from [link](https://kieranhealy.org/blog/archives/2018/11/06/spreading-multiple-values/)
+```{r}
+multi_spread <- function(df, key, value) {
+    # quote key
+    keyq <- rlang::enquo(key)
+    # break value vector into quotes
+    valueq <- rlang::enquo(value)
+    s <- rlang::quos(!!valueq)
+    df %>% gather(variable, value, !!!s) %>%
+        unite(temp, !!keyq, variable) %>%
+        spread(temp, value)
+}
+```
+
+## Length
+
+Means and standard deviations by stream, year, and origin
+```{r}
+join %>% 
+  filter(`Length Mm` > 300,  # remove outlier, data entry error
+         year %in% 2013:2014) %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  group_by(stream, sex, year, origin) %>% 
+  summarise(length_mean = round(mean(`Length Mm`, na.rm = TRUE), 1),
+            length_sd = round(sd(`Length Mm`, na.rm = TRUE), 1)) %>% 
+  multi_spread(origin, c(length_mean, length_sd)) %>% 
+  select(stream, sex, year, Hatchery_length_mean, Hatchery_length_sd, Natural_length_mean, Natural_length_sd)
+```
+
+Visualize density plots
+```{r}
+join %>% 
+  filter(`Length Mm` > 300,  # remove outlier, data entry error
+         year %in% 2013:2014,
+         stream == "Hogan") %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  ggplot(aes(x = `Length Mm`, fill = origin)) +
+  geom_density(alpha = 0.5) +
+  xlim(c(300, 550)) +
+  facet_grid(year ~ sex) +
+  theme_bw() +
+  ggtitle("Hogan Creek")
+
+join %>% 
+  filter(`Length Mm` > 300,  # remove outlier, data entry error
+         year %in% 2013:2014,
+         stream == "Stockdale") %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  ggplot(aes(x = `Length Mm`, fill = origin)) +
+  geom_density(alpha = 0.5) +
+  xlim(c(300, 550)) +
+  facet_grid(year ~ sex) +
+  theme_bw() +
+  ggtitle("Stockdale Creek")
+```
+
+Naive significance testing, not correcting for multiple tests
+```{r}
+t.test(`Length Mm` ~ origin, data = filter(SILLY == "PHOGAN13" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+t.test(`Length Mm` ~ origin, data = filter(SILLY == "PHOGAN14" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+t.test(`Length Mm` ~ origin, data = filter(SILLY == "PHOGAN13" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+t.test(`Length Mm` ~ origin, data = filter(SILLY == "PHOGAN14" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+t.test(`Length Mm` ~ origin, data = filter(SILLY == "PSTOCK13" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+t.test(`Length Mm` ~ origin, data = filter(SILLY == "PSTOCK14" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+t.test(`Length Mm` ~ origin, data = filter(SILLY == "PSTOCK13" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+t.test(`Length Mm` ~ origin, data = filter(SILLY == "PSTOCK14" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+```
+
+## Date
+
+Means by stream, year, and origin (as dates)
+```{r}
+join %>% 
+  filter(`Length Mm` > 300,  # remove outlier, data entry error
+         year %in% 2013:2014) %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  group_by(stream, sex, year, origin) %>% 
+  summarise(date_mean = mean(date, na.rm = TRUE)) %>% 
+  mutate(date_mean = format(date_mean, "%b %d")) %>% 
+  multi_spread(origin, c(date_mean)) %>% 
+  select(stream, sex, year, Hatchery_date_mean, Natural_date_mean)
+```
+
+Standard deviations (as numeric days)
+```{r}
+join %>% 
+  filter(`Length Mm` > 300,  # remove outlier, data entry error
+         year %in% 2013:2014) %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  group_by(stream, sex, year, origin) %>% 
+  summarise(date_sd = round(sd(date, na.rm = TRUE), 1)) %>% 
+  multi_spread(origin, c(date_sd)) %>% 
+  select(stream, sex, year, Hatchery_date_sd, Natural_date_sd)
+```
+
+Visualize density plots
+```{r}
+join %>% 
+  filter(year %in% 2013:2014,
+         stream == "Hogan") %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  ggplot(aes(x = DOY, fill = origin)) +
+  geom_density(alpha = 0.5) +
+  facet_grid(year ~ sex) +
+  theme_bw() +
+  ggtitle("Hogan Creek")
+
+join %>% 
+  filter(year %in% 2013:2014,
+         stream == "Stockdale") %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  ggplot(aes(x = DOY, fill = origin)) +
+  geom_density(alpha = 0.5) +
+  facet_grid(year ~ sex) +
+  theme_bw() +
+  ggtitle("Stockdale Creek")
+```
+
+Naive significance testing, not correcting for multiple tests, using non-parametric test given the clear lack of normality
+```{r}
+wilcox.test(DOY ~ origin, data = filter(SILLY == "PHOGAN13" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(DOY ~ origin, data = filter(SILLY == "PHOGAN14" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(DOY ~ origin, data = filter(SILLY == "PHOGAN13" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(DOY ~ origin, data = filter(SILLY == "PHOGAN14" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(DOY ~ origin, data = filter(SILLY == "PSTOCK13" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(DOY ~ origin, data = filter(SILLY == "PSTOCK14" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(DOY ~ origin, data = filter(SILLY == "PSTOCK13" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(DOY ~ origin, data = filter(SILLY == "PSTOCK14" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+```
+
+## Location
+
+Means and standard deviations by stream, year, and origin
+```{r}
+join %>% 
+  filter(`Length Mm` > 300,  # remove outlier, data entry error
+         year %in% 2013:2014) %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  group_by(stream, sex, year, origin) %>% 
+  summarise(distance_mean = round(mean(Distance, na.rm = TRUE), 1),
+            distance_sd = round(sd(Distance, na.rm = TRUE), 1)) %>% 
+  multi_spread(origin, c(distance_mean, distance_sd)) %>% 
+  select(stream, sex, year, Hatchery_distance_mean, Hatchery_distance_sd, Natural_distance_mean, Natural_distance_sd)
+```
+
+Visualize density plots
+```{r}
+join %>% 
+  filter(year %in% 2013:2014,
+         stream == "Hogan") %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  ggplot(aes(x = Distance, fill = origin)) +
+  geom_density(alpha = 0.5) +
+  facet_grid(year ~ sex) +
+  theme_bw() +
+  ggtitle("Hogan Creek")
+
+join %>% 
+  filter(year %in% 2013:2014,
+         stream == "Stockdale") %>%  
+  mutate(sex = factor(sex, levels = c("Male", "Female"))) %>% 
+  ggplot(aes(x = Distance, fill = origin)) +
+  geom_density(alpha = 0.5) +
+  facet_grid(year ~ sex) +
+  theme_bw() +
+  ggtitle("Stockdale Creek")
+```
+
+
+```{r}
+wilcox.test(Distance ~ origin, data = filter(SILLY == "PHOGAN13" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(Distance ~ origin, data = filter(SILLY == "PHOGAN14" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(Distance ~ origin, data = filter(SILLY == "PHOGAN13" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(Distance ~ origin, data = filter(SILLY == "PHOGAN14" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(Distance ~ origin, data = filter(SILLY == "PSTOCK13" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(Distance ~ origin, data = filter(SILLY == "PSTOCK14" & SEX == "M", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(Distance ~ origin, data = filter(SILLY == "PSTOCK13" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+
+wilcox.test(Distance ~ origin, data = filter(SILLY == "PSTOCK14" & SEX == "F", .data = join), alternative = "two.sided")$p.value < 0.05
+```
+
+# Table 3: GLM incident ratios
+
+These values were generated in the GLM R notebooks
+
+End
